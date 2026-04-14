@@ -2,6 +2,9 @@
 API interaction module for NPS Rolling Returns.
 Fetches scheme list and historical NAV data from npsnav.in.
 Handles scheme name parsing for the cascading Tier -> Scheme Type -> PFM dropdowns.
+
+npsnav.in wraps all responses in {"data": [...], "metadata": {...}}.
+We unwrap the "data" key before processing.
 """
 
 import re
@@ -23,6 +26,34 @@ from config import (
     SCHEMES_API_URL,
     HISTORICAL_API_URL,
 )
+
+
+# ============================================================
+# BROWSER HEADERS  (prevents npsnav.in from blocking the bot)
+# ============================================================
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://npsnav.in/",
+}
+
+
+def _unwrap(resp):
+    """
+    npsnav.in always returns {"data": [...], "metadata": {...}}.
+    Extract the list under "data"; fall back to resp itself if already a list.
+    """
+    if isinstance(resp, dict):
+        return resp.get("data", [])
+    if isinstance(resp, list):
+        return resp
+    return []
 
 
 # ============================================================
@@ -69,21 +100,12 @@ _PFM_STRIP = [
     r'\bLIFE\b',
 ]
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://npsnav.in/",
-}
 
-
-def parse_scheme_name(name: str) -> dict:
+def parse_scheme_name(name: str) -> Dict[str, str]:
+    """Parse a full NPS scheme name into tier, scheme_type, and pfm."""
     s = name.strip().upper()
 
+    # 1. Extract Tier
     tier = None
     for t in ['TIER II', 'TIER I']:
         m = re.search(r'\b' + t + r'\b', s)
@@ -100,6 +122,7 @@ def parse_scheme_name(name: str) -> dict:
         else:
             tier = 'TIER I'
 
+    # 2. Find scheme type
     scheme_type = None
     type_match_start = None
 
@@ -121,16 +144,19 @@ def parse_scheme_name(name: str) -> dict:
         scheme_type = 'OTHER'
         type_match_start = len(s)
 
+    # 3. Extract PFM
     pfm_raw = s[:type_match_start].strip().rstrip('- ').strip()
 
     if scheme_type == 'NPS LITE':
-        m2 = re.search(r'NPS\s+LITE\s*[-]\s*(.+?)(?:\s*[-]\s*SCHEME.*)?$', pfm_raw + ' ' + scheme_type)
+        m2 = re.search(
+            r'NPS\s+LITE\s*[-]\s*(.+?)(?:\s*[-]\s*SCHEME.*)?$',
+            pfm_raw + ' ' + scheme_type,
+        )
         if m2:
             pfm_raw = m2.group(1).strip()
 
     pfm_raw = re.sub(r'\bPENSION\s+FUND\b', '', pfm_raw)
     pfm_raw = re.sub(r'\bFUND\b', '', pfm_raw)
-
     for suffix in _PFM_STRIP:
         pfm_raw = re.sub(suffix, ' ', pfm_raw)
 
@@ -145,7 +171,8 @@ def parse_scheme_name(name: str) -> dict:
 # DROPDOWN DATA BUILDER
 # ============================================================
 
-def build_dropdown_options(schemes):
+def build_dropdown_options(schemes: List[Tuple[str, str]]) -> Dict:
+    """Parse all schemes and build nested dict for cascading dropdowns."""
     all_parsed = []
     for code, name in schemes:
         parsed = parse_scheme_name(name)
@@ -158,8 +185,8 @@ def build_dropdown_options(schemes):
         })
 
     standard_tiers = ['TIER I', 'TIER II']
+    by_tier: Dict[str, Dict[str, List]] = {}
 
-    by_tier = {}
     for entry in all_parsed:
         t = entry['tier']
         if t not in standard_tiers:
@@ -175,23 +202,23 @@ def build_dropdown_options(schemes):
 
     tiers = [t for t in standard_tiers if t in by_tier]
 
-    return {
-        'all_parsed': all_parsed,
-        'tiers': tiers,
-        'by_tier': by_tier,
-    }
+    return {'all_parsed': all_parsed, 'tiers': tiers, 'by_tier': by_tier}
 
 
-def get_scheme_types_for_tier(dropdown_data, tier):
+def get_scheme_types_for_tier(dropdown_data: Dict, tier: str) -> List[str]:
     return list(dropdown_data['by_tier'].get(tier, {}).keys())
 
 
-def get_pfms_for_tier_and_type(dropdown_data, tier, scheme_type):
+def get_pfms_for_tier_and_type(
+    dropdown_data: Dict, tier: str, scheme_type: str
+) -> List[str]:
     entries = dropdown_data['by_tier'].get(tier, {}).get(scheme_type, [])
     return sorted(set(e[2] for e in entries))
 
 
-def get_scheme_code(dropdown_data, tier, scheme_type, pfm):
+def get_scheme_code(
+    dropdown_data: Dict, tier: str, scheme_type: str, pfm: str
+) -> Optional[Tuple[str, str]]:
     entries = dropdown_data['by_tier'].get(tier, {}).get(scheme_type, [])
     for code, name, entry_pfm in entries:
         if entry_pfm == pfm:
@@ -200,21 +227,29 @@ def get_scheme_code(dropdown_data, tier, scheme_type, pfm):
 
 
 # ============================================================
-# API CALLS
+# SCHEME LIST — parse raw list-of-lists into (code, name) pairs
 # ============================================================
 
-def _parse_schemes_response(data):
+def _parse_schemes_data(data: list) -> List[Tuple[str, str]]:
+    """
+    data is already the unwrapped list (not the full API response).
+    Handles: [["SM001001", "SBI ..."], ...] and [{"schemeCode": ..., "schemeName": ...}, ...]
+    """
     if not data or not isinstance(data, list):
         return []
 
     first = data[0]
 
     if isinstance(first, (list, tuple)):
-        return [(str(item[0]).strip(), str(item[1]).strip()) for item in data if len(item) >= 2]
+        return [
+            (str(item[0]).strip(), str(item[1]).strip())
+            for item in data
+            if len(item) >= 2
+        ]
 
     if isinstance(first, dict):
-        code_keys = ["schemeCode", "code", "scheme_code", "SchemeCode", "id"]
-        name_keys = ["schemeName", "name", "scheme_name", "SchemeName", "description"]
+        code_keys = ["schemeCode", "code", "scheme_code", "SchemeCode", "id", "Scheme Code"]
+        name_keys = ["schemeName", "name", "scheme_name", "SchemeName", "description", "Scheme Name"]
         ck = next((k for k in code_keys if k in first), None)
         nk = next((k for k in name_keys if k in first), None)
         if ck and nk:
@@ -224,19 +259,20 @@ def _parse_schemes_response(data):
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
-def _fetch_schemes_cached():
+def _fetch_schemes_cached() -> List[Tuple[str, str]]:
+    """
+    Internal cached function — always returns a plain list, never a tuple,
+    so @st.cache_data type stays stable across deploys.
+    """
     cache_file = os.path.join(CACHE_DIR, "nps_all_schemes.json")
 
     for attempt in range(MAX_API_RETRIES):
         try:
-            r = requests.get(
-                SCHEMES_API_URL,
-                headers=_HEADERS,
-                timeout=NAV_API_TIMEOUT,
-            )
+            r = requests.get(SCHEMES_API_URL, headers=_HEADERS, timeout=NAV_API_TIMEOUT)
             r.raise_for_status()
-            data = r.json()
-            schemes = _parse_schemes_response(data)
+            resp = r.json()
+            data = _unwrap(resp)          # <-- unwrap {"data": [...]}
+            schemes = _parse_schemes_data(data)
             if schemes:
                 try:
                     with open(cache_file, 'w') as fh:
@@ -250,11 +286,12 @@ def _fetch_schemes_cached():
         if attempt < MAX_API_RETRIES - 1:
             time.sleep(2 ** attempt)
 
+    # API failed — try on-disk cache
     try:
         if os.path.exists(cache_file):
             with open(cache_file) as fh:
-                data = json.load(fh)
-            schemes = [(str(item[0]), str(item[1])) for item in data]
+                disk = json.load(fh)
+            schemes = [(str(item[0]), str(item[1])) for item in disk]
             if schemes:
                 return schemes
     except Exception:
@@ -263,22 +300,34 @@ def _fetch_schemes_cached():
     return []
 
 
-def fetch_all_schemes():
+def fetch_all_schemes() -> Tuple[List[Tuple[str, str]], str]:
+    """
+    Public wrapper (NOT cached). Returns (schemes, error_message).
+    error_message is "" on success.
+    Runs a fresh diagnostic request when the cache returns empty.
+    """
     try:
         schemes = _fetch_schemes_cached()
         if schemes:
             return schemes, ""
 
+        # Diagnostic: find out WHY the API returned nothing
         try:
             r = requests.get(SCHEMES_API_URL, headers=_HEADERS, timeout=NAV_API_TIMEOUT)
             if r.status_code != 200:
                 return [], "npsnav.in returned HTTP {}.".format(r.status_code)
-            data = r.json()
+            resp = r.json()
+            data = _unwrap(resp)
             if not data:
-                return [], "npsnav.in returned an empty response."
-            return [], "API response format not recognised. First item: {}".format(str(data[0])[:200])
+                return [], "npsnav.in returned an empty data list. Raw response: {}".format(
+                    str(resp)[:300]
+                )
+            schemes = _parse_schemes_data(data)
+            if schemes:
+                return schemes, ""
+            return [], "Format not recognised. First item: {}".format(str(data[0])[:200])
         except requests.exceptions.ConnectionError:
-            return [], "Cannot reach npsnav.in -- check your internet connection."
+            return [], "Cannot reach npsnav.in — check your internet connection."
         except requests.exceptions.Timeout:
             return [], "npsnav.in did not respond in time (timeout)."
         except Exception as e:
@@ -288,13 +337,25 @@ def fetch_all_schemes():
         return [], "Unexpected error: {}: {}".format(type(e).__name__, e)
 
 
+# ============================================================
+# HISTORICAL NAV
+# ============================================================
+
 @st.cache_data(show_spinner=False)
-def fetch_nav(scheme_code: str):
+def fetch_nav(scheme_code: str) -> pd.DataFrame:
+    """
+    Fetch historical NAV for one NPS scheme.
+    Response format: {"data": [{"date": "DD-MM-YYYY", "nav": float}, ...], ...}
+    Returns DataFrame with columns [date, nav]. Empty DF on failure.
+    """
     scheme_code = str(scheme_code).strip()
     cache_file = os.path.join(CACHE_DIR, "nps_nav_{}.csv".format(scheme_code))
 
+    # Use on-disk cache if fresh
     if os.path.exists(cache_file):
-        age_days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))).days
+        age_days = (
+            datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
+        ).days
         if age_days < CACHE_EXPIRY_DAYS:
             try:
                 return pd.read_csv(cache_file, parse_dates=['date'])
@@ -312,7 +373,8 @@ def fetch_nav(scheme_code: str):
         try:
             r = requests.get(url, headers=_HEADERS, timeout=NAV_API_TIMEOUT)
             r.raise_for_status()
-            raw = r.json()
+            resp = r.json()
+            raw = _unwrap(resp)           # <-- unwrap {"data": [...]}
             break
         except Exception:
             if attempt < MAX_API_RETRIES - 1:
@@ -320,7 +382,7 @@ def fetch_nav(scheme_code: str):
             else:
                 return pd.DataFrame()
 
-    if raw is None:
+    if not raw:
         return pd.DataFrame()
 
     df = pd.DataFrame(raw)
