@@ -8,6 +8,7 @@ Additions vs MF version:
 
 import pandas as pd
 import numpy as np
+from io import StringIO
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from typing import List, Tuple, Optional
@@ -125,7 +126,7 @@ def calculate_all_possible_rolling_sip(
         DataFrame with: Start Date, End Date, Redemption Date, Instalments, XIRR %, Final Value.
         Empty DataFrame if insufficient data.
     """
-    nav_df = pd.read_json(nav_df_json)
+    nav_df = pd.read_json(StringIO(nav_df_json))
     nav_df['date'] = pd.to_datetime(nav_df['date'])
 
     if nav_df.empty:
@@ -295,7 +296,7 @@ def calculate_all_possible_rolling_lumpsum(
     Returns:
         DataFrame with: Start Date, End Date, Redemption Date, XIRR %, Final Value.
     """
-    nav_df = pd.read_json(nav_df_json)
+    nav_df = pd.read_json(StringIO(nav_df_json))
     nav_df['date'] = pd.to_datetime(nav_df['date'])
 
     if nav_df.empty:
@@ -359,4 +360,4 @@ def calculate_all_possible_rolling_lumpsum(
     if not results:
         return pd.DataFrame()
 
-    return pd.DataFrame(results).sort_values('Start Date').reset_index(drop=True)
+    return pd.DataFrame(results).sort_values('Start Date')
