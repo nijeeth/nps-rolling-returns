@@ -124,7 +124,7 @@ def parse_scheme_name(name: str) -> Dict[str, str]:
 
     # 2. Find scheme type
     scheme_type = None
-    type_match_start = None
+    type_match_start = type_match_end = None
 
     for pattern in _SCHEME_TYPE_PATTERNS:
         m = re.search(pattern, s)
@@ -138,29 +138,31 @@ def parse_scheme_name(name: str) -> Dict[str, str]:
             if scheme_type is None:
                 scheme_type = raw
             type_match_start = m.start()
+            type_match_end   = m.end()
             break
 
     if scheme_type is None:
         scheme_type = 'OTHER'
-        type_match_start = len(s)
+        type_match_start = type_match_end = len(s)
 
     # 3. Extract PFM
     pfm_raw = s[:type_match_start].strip().rstrip('- ').strip()
 
-    if scheme_type == 'NPS LITE':
-        m2 = re.search(
-            r'NPS\s+LITE\s*[-]\s*(.+?)(?:\s*[-]\s*SCHEME.*)?$',
-            pfm_raw + ' ' + scheme_type,
-        )
-        if m2:
-            pfm_raw = m2.group(1).strip()
+    # For prefix-type schemes (NPS LITE, VATSALYA, MSF) the type token sits at
+    # the very start, so pfm_raw is empty. PFM actually comes AFTER the token.
+    if not pfm_raw and type_match_end < len(s):
+        after = s[type_match_end:].strip().lstrip('- ').strip()
+        after = re.sub(r'\s*[-]\s*SCHEME\s*[-]?\s*[ECGD].*$', '', after)
+        after = re.sub(r'\bSCHEME\s*[-]?\s*[ECGD].*$',        '', after)
+        pfm_raw = after.strip().rstrip('- ').strip()
 
     pfm_raw = re.sub(r'\bPENSION\s+FUND\b', '', pfm_raw)
-    pfm_raw = re.sub(r'\bFUND\b', '', pfm_raw)
+    pfm_raw = re.sub(r'\bFUND\b',            '', pfm_raw)
+    pfm_raw = re.sub(r'\bSCHEME\b',          '', pfm_raw)   # remove stray SCHEME word
     for suffix in _PFM_STRIP:
         pfm_raw = re.sub(suffix, ' ', pfm_raw)
 
-    pfm = re.sub(r'\s+', ' ', pfm_raw).strip()
+    pfm = re.sub(r'\s+', ' ', pfm_raw).strip().rstrip('-').strip()
     if not pfm:
         pfm = 'UNKNOWN'
 
