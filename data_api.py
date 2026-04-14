@@ -1,7 +1,7 @@
 """
 API interaction module for NPS Rolling Returns.
 Fetches scheme list and historical NAV data from npsnav.in.
-Handles scheme name parsing for the cascading Tier → Scheme Type → PFM dropdowns.
+Handles scheme name parsing for the cascading Tier -> Scheme Type -> PFM dropdowns.
 """
 
 import re
@@ -25,11 +25,10 @@ from config import (
 )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================
 # SCHEME NAME PARSER
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================
 
-# Scheme type patterns — more specific / longer patterns first
 _SCHEME_TYPE_PATTERNS = [
     r'NPS\s+LITE',
     r'NPS\s+VATSALYA',
@@ -39,13 +38,12 @@ _SCHEME_TYPE_PATTERNS = [
     r'STATE\s+GOVT',
     r'CORPORATE\s+CG',
     r'CORPORATE\s+OC',
-    r'SCHEME\s*[-–]?\s*E',
-    r'SCHEME\s*[-–]?\s*C',
-    r'SCHEME\s*[-–]?\s*G',
-    r'SCHEME\s*[-–]?\s*D',
+    r'SCHEME\s*[-]?\s*E',
+    r'SCHEME\s*[-]?\s*C',
+    r'SCHEME\s*[-]?\s*G',
+    r'SCHEME\s*[-]?\s*D',
 ]
 
-# Canonical display name for each type
 _CANONICAL_TYPE = {
     'NPS LITE':     'NPS LITE',
     'NPS VATSALYA': 'VATSALYA',
@@ -61,7 +59,6 @@ _CANONICAL_TYPE = {
     'SCHEME D':     'SCHEME D',
 }
 
-# Suffixes to strip from PFM name after removing "PENSION FUND"
 _PFM_STRIP = [
     r'\bRETIREMENT\s+SOLUTIONS\b',
     r'\bSUN\s+LIFE\b',
@@ -72,27 +69,27 @@ _PFM_STRIP = [
     r'\bLIFE\b',
 ]
 
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://npsnav.in/",
+}
 
-def parse_scheme_name(name: str) -> Dict[str, str]:
-    """
-    Parse a full NPS scheme name into its components.
 
-    Args:
-        name: Full scheme name e.g. "HDFC PENSION FUND SCHEME E - TIER I"
-
-    Returns:
-        dict with keys: tier, scheme_type, pfm
-        e.g. {'tier': 'TIER I', 'scheme_type': 'SCHEME E', 'pfm': 'HDFC'}
-    """
+def parse_scheme_name(name: str) -> dict:
     s = name.strip().upper()
 
-    # ── 1. Extract Tier (check TIER II before TIER I to avoid partial match) ──
     tier = None
     for t in ['TIER II', 'TIER I']:
         m = re.search(r'\b' + t + r'\b', s)
         if m:
             tier = t
-            s = s[:m.start()].strip().rstrip('-– ').strip()
+            s = s[:m.start()].strip().rstrip('- ').strip()
             break
 
     if tier is None:
@@ -103,7 +100,6 @@ def parse_scheme_name(name: str) -> Dict[str, str]:
         else:
             tier = 'TIER I'
 
-    # ── 2. Find scheme type ────────────────────────────────────────────────
     scheme_type = None
     type_match_start = None
 
@@ -111,8 +107,7 @@ def parse_scheme_name(name: str) -> Dict[str, str]:
         m = re.search(pattern, s)
         if m:
             raw = re.sub(r'\s+', ' ', m.group().strip())
-            # Normalise dashes: "SCHEME - E" → "SCHEME E"
-            raw = re.sub(r'SCHEME\s*[-–]?\s*([ECGD])', r'SCHEME \1', raw).strip()
+            raw = re.sub(r'SCHEME\s*[-]?\s*([ECGD])', r'SCHEME \1', raw).strip()
             for key, canonical in _CANONICAL_TYPE.items():
                 if key in raw:
                     scheme_type = canonical
@@ -126,20 +121,16 @@ def parse_scheme_name(name: str) -> Dict[str, str]:
         scheme_type = 'OTHER'
         type_match_start = len(s)
 
-    # ── 3. Extract PFM from the part before the scheme type ───────────────
-    pfm_raw = s[:type_match_start].strip().rstrip('-– ').strip()
+    pfm_raw = s[:type_match_start].strip().rstrip('- ').strip()
 
-    # Special case: NPS LITE has "NPS LITE - SBI PENSION FUND - SCHEME ..."
     if scheme_type == 'NPS LITE':
-        m2 = re.search(r'NPS\s+LITE\s*[-–]\s*(.+?)(?:\s*[-–]\s*SCHEME.*)?$', pfm_raw + ' ' + scheme_type)
+        m2 = re.search(r'NPS\s+LITE\s*[-]\s*(.+?)(?:\s*[-]\s*SCHEME.*)?$', pfm_raw + ' ' + scheme_type)
         if m2:
             pfm_raw = m2.group(1).strip()
 
-    # Remove "PENSION FUND" and standalone "FUND"
     pfm_raw = re.sub(r'\bPENSION\s+FUND\b', '', pfm_raw)
     pfm_raw = re.sub(r'\bFUND\b', '', pfm_raw)
 
-    # Strip known filler words
     for suffix in _PFM_STRIP:
         pfm_raw = re.sub(suffix, ' ', pfm_raw)
 
@@ -150,23 +141,11 @@ def parse_scheme_name(name: str) -> Dict[str, str]:
     return {'tier': tier, 'scheme_type': scheme_type, 'pfm': pfm}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================
 # DROPDOWN DATA BUILDER
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================
 
-def build_dropdown_options(schemes: List[Tuple[str, str]]) -> Dict:
-    """
-    Parse all schemes and build data structures for the cascading dropdowns.
-
-    Args:
-        schemes: List of (scheme_code, scheme_name) tuples from the API
-
-    Returns:
-        dict with:
-          'all_parsed'   — list of {code, name, tier, scheme_type, pfm}
-          'tiers'        — sorted list of unique tiers (TIER I, TIER II only)
-          'by_tier'      — {tier: {scheme_type: [(code, name, pfm), ...]}}
-    """
+def build_dropdown_options(schemes):
     all_parsed = []
     for code, name in schemes:
         parsed = parse_scheme_name(name)
@@ -178,26 +157,21 @@ def build_dropdown_options(schemes: List[Tuple[str, str]]) -> Dict:
             'pfm': parsed['pfm'],
         })
 
-    # Only TIER I and TIER II in the main dropdowns
-    # VATSALYA etc. are edge cases we'll include under TIER I for now
     standard_tiers = ['TIER I', 'TIER II']
 
-    # Build nested dict: tier → scheme_type → list of (code, name, pfm)
-    by_tier: Dict[str, Dict[str, List]] = {}
+    by_tier = {}
     for entry in all_parsed:
         t = entry['tier']
-        # Map non-standard tiers into TIER I
         if t not in standard_tiers:
             t = 'TIER I'
         st = entry['scheme_type']
         by_tier.setdefault(t, {}).setdefault(st, [])
         by_tier[t][st].append((entry['code'], entry['name'], entry['pfm']))
 
-    # Sort scheme types and PFMs within each tier
     for t in by_tier:
         for st in by_tier[t]:
-            by_tier[t][st].sort(key=lambda x: x[2])  # sort by pfm name
-        by_tier[t] = dict(sorted(by_tier[t].items()))  # sort scheme types
+            by_tier[t][st].sort(key=lambda x: x[2])
+        by_tier[t] = dict(sorted(by_tier[t].items()))
 
     tiers = [t for t in standard_tiers if t in by_tier]
 
@@ -208,24 +182,16 @@ def build_dropdown_options(schemes: List[Tuple[str, str]]) -> Dict:
     }
 
 
-def get_scheme_types_for_tier(dropdown_data: Dict, tier: str) -> List[str]:
-    """Return sorted list of scheme types available for the given tier."""
+def get_scheme_types_for_tier(dropdown_data, tier):
     return list(dropdown_data['by_tier'].get(tier, {}).keys())
 
 
-def get_pfms_for_tier_and_type(dropdown_data: Dict, tier: str, scheme_type: str) -> List[str]:
-    """Return sorted list of PFM short names for tier + scheme type combination."""
+def get_pfms_for_tier_and_type(dropdown_data, tier, scheme_type):
     entries = dropdown_data['by_tier'].get(tier, {}).get(scheme_type, [])
     return sorted(set(e[2] for e in entries))
 
 
-def get_scheme_code(dropdown_data: Dict, tier: str, scheme_type: str, pfm: str) -> Optional[Tuple[str, str]]:
-    """
-    Look up (code, full_name) for the selected tier + scheme_type + pfm.
-
-    Returns:
-        (scheme_code, full_scheme_name) tuple, or (None, None) if not found.
-    """
+def get_scheme_code(dropdown_data, tier, scheme_type, pfm):
     entries = dropdown_data['by_tier'].get(tier, {}).get(scheme_type, [])
     for code, name, entry_pfm in entries:
         if entry_pfm == pfm:
@@ -233,31 +199,11 @@ def get_scheme_code(dropdown_data: Dict, tier: str, scheme_type: str, pfm: str) 
     return None, None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================
 # API CALLS
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================
 
-# Browser-like headers so npsnav.in doesn't block the request
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://npsnav.in/",
-}
-
-
-def _parse_schemes_response(data) -> List[Tuple[str, str]]:
-    """
-    Normalise the API response into a list of (code, name) tuples.
-    Handles three shapes the API might return:
-      - [[code, name], ...]          — list of 2-element lists
-      - [[code, name, ...], ...]     — list with extra fields (take first two)
-      - [{"schemeCode": ..., "schemeName": ...}, ...]  — list of dicts
-    """
+def _parse_schemes_response(data):
     if not data or not isinstance(data, list):
         return []
 
@@ -267,7 +213,6 @@ def _parse_schemes_response(data) -> List[Tuple[str, str]]:
         return [(str(item[0]).strip(), str(item[1]).strip()) for item in data if len(item) >= 2]
 
     if isinstance(first, dict):
-        # Try common key names
         code_keys = ["schemeCode", "code", "scheme_code", "SchemeCode", "id"]
         name_keys = ["schemeName", "name", "scheme_name", "SchemeName", "description"]
         ck = next((k for k in code_keys if k in first), None)
@@ -279,12 +224,7 @@ def _parse_schemes_response(data) -> List[Tuple[str, str]]:
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
-def _fetch_schemes_cached() -> List[Tuple[str, str]]:
-    """
-    Internal cached function — always returns a plain list (never a tuple).
-    @st.cache_data only wraps this so the return type never changes between deploys.
-    Returns empty list on failure; the public wrapper handles error messaging.
-    """
+def _fetch_schemes_cached():
     cache_file = os.path.join(CACHE_DIR, "nps_all_schemes.json")
 
     for attempt in range(MAX_API_RETRIES):
@@ -310,7 +250,6 @@ def _fetch_schemes_cached() -> List[Tuple[str, str]]:
         if attempt < MAX_API_RETRIES - 1:
             time.sleep(2 ** attempt)
 
-    # API failed — try on-disk cache
     try:
         if os.path.exists(cache_file):
             with open(cache_file) as fh:
@@ -324,60 +263,36 @@ def _fetch_schemes_cached() -> List[Tuple[str, str]]:
     return []
 
 
-def fetch_all_schemes() -> Tuple[List[Tuple[str, str]], str]:
-    """
-    Public wrapper around _fetch_schemes_cached().
-    NOT decorated with @st.cache_data — returns (schemes, error_message).
-    error_message is "" on success, human-readable string on failure.
-    """
+def fetch_all_schemes():
     try:
         schemes = _fetch_schemes_cached()
         if schemes:
             return schemes, ""
 
-        # Cached function returned empty — run a live diagnostic request
-        # (not cached) so we can surface the actual error to the user
         try:
             r = requests.get(SCHEMES_API_URL, headers=_HEADERS, timeout=NAV_API_TIMEOUT)
             if r.status_code != 200:
-                return [], f"npsnav.in returned HTTP {r.status_code}."
+                return [], "npsnav.in returned HTTP {}.".format(r.status_code)
             data = r.json()
             if not data:
                 return [], "npsnav.in returned an empty response."
-            return [], (
-                f"API response format not recognised. "
-                f"First item was: {str(data[0])[:200]}"
-            )
+            return [], "API response format not recognised. First item: {}".format(str(data[0])[:200])
         except requests.exceptions.ConnectionError:
-            return [], "Cannot reach npsnav.in — check your internet connection."
+            return [], "Cannot reach npsnav.in -- check your internet connection."
         except requests.exceptions.Timeout:
             return [], "npsnav.in did not respond in time (timeout)."
         except Exception as e:
-            return [], f"Error contacting npsnav.in: {type(e).__name__}: {e}"
+            return [], "Error contacting npsnav.in: {}: {}".format(type(e).__name__, e)
 
     except Exception as e:
-        return [], f"Unexpected error loading schemes: {type(e).__name__}: {e}"
+        return [], "Unexpected error: {}: {}".format(type(e).__name__, e)
 
 
 @st.cache_data(show_spinner=False)
-def fetch_nav(scheme_code: str) -> pd.DataFrame:
-    """
-    Fetch historical NAV for an NPS scheme from npsnav.in.
-
-    The API returns dates in DD-MM-YYYY format; we convert immediately to
-    YYYY-MM-DD so the rest of the app works identically to the MF calculator.
-
-    Args:
-        scheme_code: NPS scheme code e.g. "SM008001"
-
-    Returns:
-        DataFrame with columns ['date' (datetime), 'nav' (float)], sorted ascending.
-        Returns empty DataFrame if fetch fails.
-    """
+def fetch_nav(scheme_code: str):
     scheme_code = str(scheme_code).strip()
-    cache_file = os.path.join(CACHE_DIR, f"nps_nav_{scheme_code}.csv")
+    cache_file = os.path.join(CACHE_DIR, "nps_nav_{}.csv".format(scheme_code))
 
-    # Check file cache (avoids hammering the API on reruns)
     if os.path.exists(cache_file):
         age_days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))).days
         if age_days < CACHE_EXPIRY_DAYS:
@@ -390,8 +305,9 @@ def fetch_nav(scheme_code: str) -> pd.DataFrame:
         except Exception:
             pass
 
-    url = f"{HISTORICAL_API_URL}/{scheme_code}"
+    url = "{}/{}".format(HISTORICAL_API_URL, scheme_code)
 
+    raw = None
     for attempt in range(MAX_API_RETRIES):
         try:
             r = requests.get(url, headers=_HEADERS, timeout=NAV_API_TIMEOUT)
@@ -404,14 +320,15 @@ def fetch_nav(scheme_code: str) -> pd.DataFrame:
             else:
                 return pd.DataFrame()
 
-    # raw is a list of {"date": "DD-MM-YYYY", "nav": float}
+    if raw is None:
+        return pd.DataFrame()
+
     df = pd.DataFrame(raw)
     if df.empty or 'date' not in df.columns or 'nav' not in df.columns:
         return pd.DataFrame()
 
-    # ── KEY: convert DD-MM-YYYY → datetime immediately ────────────────────
     df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y', errors='coerce')
-    df['nav']  = pd.to_numeric(df['nav'], errors='coerce')
+    df['nav'] = pd.to_numeric(df['nav'], errors='coerce')
     df = df.dropna(subset=['date', 'nav']).sort_values('date').reset_index(drop=True)
 
     if not df.empty:
