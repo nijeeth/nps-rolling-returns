@@ -237,55 +237,108 @@ def get_scheme_code(dropdown_data: Dict, tier: str, scheme_type: str, pfm: str) 
 # API CALLS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Browser-like headers so npsnav.in doesn't block the request
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://npsnav.in/",
+}
+
+
+def _parse_schemes_response(data) -> List[Tuple[str, str]]:
+    """
+    Normalise the API response into a list of (code, name) tuples.
+    Handles three shapes the API might return:
+      - [[code, name], ...]          — list of 2-element lists
+      - [[code, name, ...], ...]     — list with extra fields (take first two)
+      - [{"schemeCode": ..., "schemeName": ...}, ...]  — list of dicts
+    """
+    if not data or not isinstance(data, list):
+        return []
+
+    first = data[0]
+
+    if isinstance(first, (list, tuple)):
+        return [(str(item[0]).strip(), str(item[1]).strip()) for item in data if len(item) >= 2]
+
+    if isinstance(first, dict):
+        # Try common key names
+        code_keys = ["schemeCode", "code", "scheme_code", "SchemeCode", "id"]
+        name_keys = ["schemeName", "name", "scheme_name", "SchemeName", "description"]
+        ck = next((k for k in code_keys if k in first), None)
+        nk = next((k for k in name_keys if k in first), None)
+        if ck and nk:
+            return [(str(item[ck]).strip(), str(item[nk]).strip()) for item in data]
+
+    return []
+
+
 @st.cache_data(show_spinner=False, ttl=86400)
-def fetch_all_schemes() -> List[Tuple[str, str]]:
+def fetch_all_schemes() -> Tuple[List[Tuple[str, str]], str]:
     """
     Fetch the complete list of NPS schemes from npsnav.in.
     Cached for 24 hours (scheme list changes rarely).
     Falls back to disk cache if API is unavailable.
 
     Returns:
-        List of (scheme_code, scheme_name) tuples.
-        Returns empty list only if every attempt fails AND no disk cache exists.
+        (schemes, error_message)
+        schemes       — List of (scheme_code, scheme_name) tuples (empty on failure)
+        error_message — Human-readable reason for failure, or "" on success
     """
     cache_file = os.path.join(CACHE_DIR, "nps_all_schemes.json")
+    last_error = ""
 
     for attempt in range(MAX_API_RETRIES):
         try:
-            r = requests.get(SCHEMES_API_URL, timeout=NAV_API_TIMEOUT)
+            r = requests.get(
+                SCHEMES_API_URL,
+                headers=_HEADERS,
+                timeout=NAV_API_TIMEOUT,
+            )
             r.raise_for_status()
-            data = r.json()  # List of [code, name] pairs
-            if data:
-                # Normalise: accept both [[code, name], ...] and [{"schemeCode": ..., "schemeName": ...}, ...]
-                if isinstance(data[0], (list, tuple)):
-                    schemes = [(str(item[0]), str(item[1])) for item in data]
-                elif isinstance(data[0], dict):
-                    schemes = [(str(item.get('schemeCode', item.get('code', ''))),
-                                str(item.get('schemeName', item.get('name', '')))) for item in data]
-                else:
-                    schemes = []
-                if schemes:
-                    try:
-                        with open(cache_file, 'w') as fh:
-                            json.dump(schemes, fh)
-                    except Exception:
-                        pass
-                    return schemes
-        except Exception:
-            if attempt < MAX_API_RETRIES - 1:
-                time.sleep(2 ** attempt)
+            data = r.json()
+            schemes = _parse_schemes_response(data)
+            if schemes:
+                try:
+                    with open(cache_file, 'w') as fh:
+                        json.dump(schemes, fh)
+                except Exception:
+                    pass
+                return schemes, ""
+            else:
+                last_error = (
+                    f"API returned data but in an unexpected format. "
+                    f"Raw response (first 300 chars): {str(data)[:300]}"
+                )
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"Connection error — could not reach npsnav.in. ({e})"
+        except requests.exceptions.Timeout:
+            last_error = "Request timed out — npsnav.in did not respond in time."
+        except requests.exceptions.HTTPError as e:
+            last_error = f"HTTP error from npsnav.in: {e}"
+        except Exception as e:
+            last_error = f"Unexpected error: {type(e).__name__}: {e}"
+
+        if attempt < MAX_API_RETRIES - 1:
+            time.sleep(2 ** attempt)
 
     # API failed — try on-disk cache
     try:
         if os.path.exists(cache_file):
             with open(cache_file) as fh:
                 data = json.load(fh)
-            if data:
-                return [(str(item[0]), str(item[1])) for item in data]
+            schemes = [(str(item[0]), str(item[1])) for item in data]
+            if schemes:
+                return schemes, ""
     except Exception:
         pass
 
-    return []
+    return [], last_error
 
 
 @st.cache_data(show_spinner=False)
@@ -323,7 +376,7 @@ def fetch_nav(scheme_code: str) -> pd.DataFrame:
 
     for attempt in range(MAX_API_RETRIES):
         try:
-            r = requests.get(url, timeout=NAV_API_TIMEOUT)
+            r = requests.get(url, headers=_HEADERS, timeout=NAV_API_TIMEOUT)
             r.raise_for_status()
             raw = r.json()
             break
