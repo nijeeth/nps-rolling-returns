@@ -279,19 +279,13 @@ def _parse_schemes_response(data) -> List[Tuple[str, str]]:
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
-def fetch_all_schemes() -> Tuple[List[Tuple[str, str]], str]:
+def _fetch_schemes_cached() -> List[Tuple[str, str]]:
     """
-    Fetch the complete list of NPS schemes from npsnav.in.
-    Cached for 24 hours (scheme list changes rarely).
-    Falls back to disk cache if API is unavailable.
-
-    Returns:
-        (schemes, error_message)
-        schemes       — List of (scheme_code, scheme_name) tuples (empty on failure)
-        error_message — Human-readable reason for failure, or "" on success
+    Internal cached function — always returns a plain list (never a tuple).
+    @st.cache_data only wraps this so the return type never changes between deploys.
+    Returns empty list on failure; the public wrapper handles error messaging.
     """
     cache_file = os.path.join(CACHE_DIR, "nps_all_schemes.json")
-    last_error = ""
 
     for attempt in range(MAX_API_RETRIES):
         try:
@@ -309,20 +303,9 @@ def fetch_all_schemes() -> Tuple[List[Tuple[str, str]], str]:
                         json.dump(schemes, fh)
                 except Exception:
                     pass
-                return schemes, ""
-            else:
-                last_error = (
-                    f"API returned data but in an unexpected format. "
-                    f"Raw response (first 300 chars): {str(data)[:300]}"
-                )
-        except requests.exceptions.ConnectionError as e:
-            last_error = f"Connection error — could not reach npsnav.in. ({e})"
-        except requests.exceptions.Timeout:
-            last_error = "Request timed out — npsnav.in did not respond in time."
-        except requests.exceptions.HTTPError as e:
-            last_error = f"HTTP error from npsnav.in: {e}"
-        except Exception as e:
-            last_error = f"Unexpected error: {type(e).__name__}: {e}"
+                return schemes
+        except Exception:
+            pass
 
         if attempt < MAX_API_RETRIES - 1:
             time.sleep(2 ** attempt)
@@ -334,11 +317,46 @@ def fetch_all_schemes() -> Tuple[List[Tuple[str, str]], str]:
                 data = json.load(fh)
             schemes = [(str(item[0]), str(item[1])) for item in data]
             if schemes:
-                return schemes, ""
+                return schemes
     except Exception:
         pass
 
-    return [], last_error
+    return []
+
+
+def fetch_all_schemes() -> Tuple[List[Tuple[str, str]], str]:
+    """
+    Public wrapper around _fetch_schemes_cached().
+    NOT decorated with @st.cache_data — returns (schemes, error_message).
+    error_message is "" on success, human-readable string on failure.
+    """
+    try:
+        schemes = _fetch_schemes_cached()
+        if schemes:
+            return schemes, ""
+
+        # Cached function returned empty — run a live diagnostic request
+        # (not cached) so we can surface the actual error to the user
+        try:
+            r = requests.get(SCHEMES_API_URL, headers=_HEADERS, timeout=NAV_API_TIMEOUT)
+            if r.status_code != 200:
+                return [], f"npsnav.in returned HTTP {r.status_code}."
+            data = r.json()
+            if not data:
+                return [], "npsnav.in returned an empty response."
+            return [], (
+                f"API response format not recognised. "
+                f"First item was: {str(data[0])[:200]}"
+            )
+        except requests.exceptions.ConnectionError:
+            return [], "Cannot reach npsnav.in — check your internet connection."
+        except requests.exceptions.Timeout:
+            return [], "npsnav.in did not respond in time (timeout)."
+        except Exception as e:
+            return [], f"Error contacting npsnav.in: {type(e).__name__}: {e}"
+
+    except Exception as e:
+        return [], f"Unexpected error loading schemes: {type(e).__name__}: {e}"
 
 
 @st.cache_data(show_spinner=False)
