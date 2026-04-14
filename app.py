@@ -243,12 +243,16 @@ with tab1:
 
     # ── Load scheme list ─────────────────────────────────────────────────────
     with st.spinner("Loading NPS scheme list..."):
-        all_schemes = fetch_all_schemes()
+        all_schemes, scheme_load_error = fetch_all_schemes()
 
     if not all_schemes:
-        st.error(
-            "Could not load the NPS scheme list. "
-            "Please check your internet connection and refresh the page."
+        st.error("❌ Could not load the NPS scheme list.")
+        st.markdown(
+            f"**Reason:** `{scheme_load_error}`\n\n"
+            "**What to try:**\n"
+            "1. Refresh the page\n"
+            "2. Check that [npsnav.in](https://npsnav.in) is accessible from your browser\n"
+            "3. If the site is down, try again in a few minutes"
         )
         st.stop()
 
