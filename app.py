@@ -243,7 +243,20 @@ with tab1:
 
     # ── Load scheme list ─────────────────────────────────────────────────────
     with st.spinner("Loading NPS scheme list..."):
-        all_schemes, scheme_load_error = fetch_all_schemes()
+        try:
+            _result = fetch_all_schemes()
+            # Defensive: handle both (list, error_str) tuple and plain list
+            if isinstance(_result, tuple) and len(_result) == 2:
+                all_schemes, scheme_load_error = _result
+            elif isinstance(_result, list):
+                all_schemes = _result
+                scheme_load_error = "" if _result else "API returned an empty list."
+            else:
+                all_schemes = []
+                scheme_load_error = f"Unexpected return type: {type(_result)}"
+        except Exception as _e:
+            all_schemes = []
+            scheme_load_error = f"{type(_e).__name__}: {_e}"
 
     if not all_schemes:
         st.error("❌ Could not load the NPS scheme list.")
@@ -952,7 +965,7 @@ st.markdown(f"""
      style="color:#1a56db; text-decoration:none;">{CREATOR_EMAIL}</a>
   <br><br>
 
-  <span style='color:#b91c1c; font-weight:700;'>⚠ Disclaimer:</span>
+  <span style='color:#b91c1c; font-weight:700;'>\u26a0 Disclaimer:</span>
   This tool is built solely for educational/exploratory purposes.
   Results may contain unintended errors. This is <b>NOT financial advice.</b>
   NPS investments are subject to market risks, and past performance does not guarantee
