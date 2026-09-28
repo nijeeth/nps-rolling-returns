@@ -32,6 +32,33 @@ Effect: SBI Scheme A, 1-year SIP for 2024–2026, shows a made-up worst of −79
 
 **The site can be slow or unreachable.** The first load can hang for about a minute.
 
+## Known calculation issues (not fixed)
+
+Checked on 28 September 2026, with this app's own code, on npsnav.in data. These are recorded here and left as they are.
+
+**The XIRR solver can jump below −100% and silently drop deep-loss periods.** It uses Newton's method. On SBI Scheme A Tier I, a 1-year SIP keeps 2,159 periods versus 2,176 true, and the worst shown is −79.64% versus a true −83.64%. For 3 years: 1,665 versus 1,691 periods, and −38.23% versus −40.67%. HDFC Scheme A Tier I, 1 year: 2,167 versus 2,176. A fixed approach, a bracketed solver, is in the sister project sip-rolling-returns.
+
+**The To Date is ignored.** The last instalment, or the sale, can fall after it.
+
+- SIP, 1 year, To Date 29/12/2018: a start of 29/01/2018 sells on 01/01/2019.
+- Lump sum, To Date 29/12/2019: a start of 28/12/2018 sells on 30/12/2019.
+
+**The last start date stops one day early.** With To Date 30/04/2019, the last start is 30/05/2018, though 31/05/2018 is valid.
+
+**SIP amounts round down to the nearest 500.** 1,250 becomes 1,000. 2,250 becomes 2,000.
+
+**Salary contribution date.** If the salary day is a holiday, every later payment follows the shifted date. With salary day 25, and 25/01/2020 a Saturday, all 12 payments fall on the 27th.
+
+**Lump-sum results are labelled "XIRR %".** They are CAGR.
+
+**Excel files.**
+
+- The lump-sum file leaves the To Date blank.
+- The SIP file has both "Final Value" and "Final Value (₹)".
+- The lump-sum file repeats End Date as Redemption Date.
+
+**Old results stay on screen after a failed recalculation.** A failed download is remembered as "no data" until the app is restarted.
+
 ## What it did
 
 It calculated rolling SIP and lump-sum returns for NPS schemes, and it could compare up to 3 funds.

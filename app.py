@@ -62,8 +62,8 @@ st.set_page_config(
 )
 
 st.warning(
-    "**This app is retired for now.** The data source (npsnav.in, unofficial) "
-    "has known errors, so results may be wrong.\n\n"
+    "**This app is retired for now.** Results may be wrong because of "
+    "data-source errors (npsnav.in, unofficial) and known calculation issues.\n\n"
     "See the README on GitHub: https://github.com/nijeeth/nps-rolling-returns"
 )
 
