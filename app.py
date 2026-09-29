@@ -61,6 +61,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+st.warning(
+    "**This app is retired for now.** Results may be wrong because of "
+    "data-source errors (npsnav.in, unofficial) and known calculation issues.\n\n"
+    "See the README on GitHub: https://github.com/nijeeth/nps-rolling-returns"
+)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CUSTOM CSS
 # ══════════════════════════════════════════════════════════════════════════════
